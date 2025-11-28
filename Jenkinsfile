@@ -170,19 +170,19 @@ pipeline {
                 reportName: 'Security Reports'
             ])
         }
-        success {
-            echo '
-═══════════════════════════════════════'
-            echo 'PIPELINE TERMINÉ AVEC SUCCÈS ! '
-            echo '
-═══════════════════════════════════════'
-        }
-        failure {
-            echo '
-═══════════════════════════════════════'
-            echo 'PIPELINE ÉCHOUÉ - Consultez les logs'
-            echo '
-═══════════════════════════════════════'
-        }
+	success {
+  	  echo """
+═══════════════════════════════════════
+PIPELINE TERMINÉ AVEC SUCCÈS !
+═══════════════════════════════════════
+"""
+}
+f	ailure {
+   	 echo """
+═══════════════════════════════════════
+PIPELINE ÉCHOUÉ - Consultez les logs
+═══════════════════════════════════════
+"""
+}
     }
 }
