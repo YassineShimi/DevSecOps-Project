@@ -5,11 +5,11 @@ pipeline {
         DOCKER_IMAGE = "devsecops-app"
         DOCKER_TAG   = "${BUILD_NUMBER}"
         APP_PORT     = "5000"
-        
+
         // Absolute paths for pipx-installed tools
         BANDIT      = "/home/viper/.local/bin/bandit"
         SAFETY      = "/home/viper/.local/bin/safety"
-        
+
         // Docker binary path
         DOCKER_BIN  = "/usr/bin/docker"
     }
@@ -17,11 +17,27 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                echo 'Récupération du code source...'
-                checkout scm
+                echo 'Récupération du code source avec sécurité...'
+                script {
+                    retry(3) {
+                        checkout([$class: 'GitSCM',
+                            branches: [[name: '*/main']],
+                            doGenerateSubmoduleConfigurations: false,
+                            extensions: [
+                                [$class: 'CleanBeforeCheckout'],
+                                [$class: 'CloneOption', depth: 1, shallow: true, noTags: false, reference: '', timeout: 10]
+                            ],
+                            userRemoteConfigs: [[
+                                url: 'https://github.com/YassineShimi/DevSecOps-Project.git',
+                                // Uncomment below if private repo
+                                // credentialsId: 'your-github-credentials-id'
+                            ]]
+                        ])
+                    }
+                }
             }
         }
-        
+
         stage('SAST & SCA') {
             steps {
                 echo 'Analyse du code avec Bandit et Safety...'
@@ -34,7 +50,7 @@ pipeline {
                 '''
             }
         }
-        
+
         stage('Secrets Scanning') {
             steps {
                 echo 'Recherche de secrets exposés avec Gitleaks...'
@@ -48,7 +64,7 @@ pipeline {
                 '''
             }
         }
-        
+
         stage('Build Docker Image') {
             steps {
                 echo "Construction de l'image Docker..."
@@ -59,7 +75,7 @@ pipeline {
                 '''
             }
         }
-        
+
         stage('Docker Security Scan') {
             steps {
                 echo "Scan de sécurité de l'image avec Trivy..."
@@ -81,7 +97,7 @@ pipeline {
                 '''
             }
         }
-        
+
         stage('Deploy to Staging') {
             steps {
                 echo 'Déploiement en environnement de test...'
@@ -101,13 +117,12 @@ pipeline {
                 '''
             }
         }
-        
+
         stage('DAST - Tests dynamiques') {
             steps {
                 echo "Scan dynamique avec OWASP ZAP..."
                 sh '''
                     ${DOCKER_BIN} pull owasp/zap2docker-stable
-                    
                     ${DOCKER_BIN} run --rm \
                         --network jenkins \
                         -v $(pwd):/zap/wrk:rw \
@@ -119,7 +134,7 @@ pipeline {
                 '''
             }
         }
-        
+
         stage('Security Gate') {
             steps {
                 echo '''
