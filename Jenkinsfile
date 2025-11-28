@@ -5,36 +5,13 @@ pipeline {
         DOCKER_IMAGE = "devsecops-app"
         DOCKER_TAG   = "${BUILD_NUMBER}"
         APP_PORT     = "5000"
-
-        // Absolute paths for pipx-installed tools
-        BANDIT      = "/home/viper/.local/bin/bandit"
-        SAFETY      = "/home/viper/.local/bin/safety"
-
-        // Docker binary path
-        DOCKER_BIN  = "/usr/bin/docker"
     }
 
     stages {
         stage('Checkout') {
             steps {
-                echo 'Récupération du code source avec sécurité...'
-                script {
-                    retry(3) {
-                        checkout([$class: 'GitSCM',
-                            branches: [[name: '*/main']],
-                            doGenerateSubmoduleConfigurations: false,
-                            extensions: [
-                                [$class: 'CleanBeforeCheckout'],
-                                [$class: 'CloneOption', depth: 1, shallow: true, noTags: false, reference: '', timeout: 10]
-                            ],
-                            userRemoteConfigs: [[
-                                url: 'https://github.com/YassineShimi/DevSecOps-Project.git',
-                                // Uncomment below if private repo
-                                // credentialsId: 'your-github-credentials-id'
-                            ]]
-                        ])
-                    }
-                }
+                echo 'Récupération du code source...'
+                checkout scm
             }
         }
 
@@ -42,10 +19,13 @@ pipeline {
             steps {
                 echo 'Analyse du code avec Bandit et Safety...'
                 sh '''
-                    ${BANDIT} -r . -f json -o bandit-report.json || true
-                    ${BANDIT} -r . -f html -o bandit-report.html || true
-                    ${SAFETY} check --json --output safety-report.json || true
-                    ${SAFETY} check || true
+                    docker run --rm -v $(pwd):/app python:3.12-slim bash -c "
+                        pip install bandit safety &&
+                        bandit -r /app -f json -o /app/bandit-report.json || true &&
+                        bandit -r /app -f html -o /app/bandit-report.html || true &&
+                        safety check --json --output /app/safety-report.json || true &&
+                        safety check || true
+                    "
                     echo "Rapports Bandit et Safety générés"
                 '''
             }
@@ -55,12 +35,11 @@ pipeline {
             steps {
                 echo 'Recherche de secrets exposés avec Gitleaks...'
                 sh '''
-                    ${DOCKER_BIN} pull zricethezav/gitleaks:latest
-                    ${DOCKER_BIN} run --rm -v $(pwd):/path zricethezav/gitleaks:latest \
+                    docker run --rm -v $(pwd):/path zricethezav/gitleaks:latest \
                         detect --source="/path" \
                         --report-format=json \
                         --report-path=/path/gitleaks-report.json \
-                        --no-git || echo "Secrets détectés (attendu pour la démo)"
+                        --no-git || echo "Secrets détectés (attendu)"
                 '''
             }
         }
@@ -69,8 +48,8 @@ pipeline {
             steps {
                 echo "Construction de l'image Docker..."
                 sh '''
-                    ${DOCKER_BIN} build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
-                    ${DOCKER_BIN} tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
+                    docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
+                    docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
                     echo "Image créée: ${DOCKER_IMAGE}:${DOCKER_TAG}"
                 '''
             }
@@ -80,19 +59,9 @@ pipeline {
             steps {
                 echo "Scan de sécurité de l'image avec Trivy..."
                 sh '''
-                    ${DOCKER_BIN} pull aquasec/trivy:latest
-                    ${DOCKER_BIN} run --rm \
-                        -v /var/run/docker.sock:/var/run/docker.sock \
-                        -v $(pwd):/output \
-                        aquasec/trivy:latest image \
+                    docker run --rm aquasec/trivy:latest image \
                         --format json \
-                        --output /output/trivy-report.json \
-                        ${DOCKER_IMAGE}:${DOCKER_TAG} || true
-                    
-                    ${DOCKER_BIN} run --rm \
-                        -v /var/run/docker.sock:/var/run/docker.sock \
-                        aquasec/trivy:latest image \
-                        --severity HIGH,CRITICAL \
+                        --output trivy-report.json \
                         ${DOCKER_IMAGE}:${DOCKER_TAG} || true
                 '''
             }
@@ -102,15 +71,9 @@ pipeline {
             steps {
                 echo 'Déploiement en environnement de test...'
                 sh '''
-                    ${DOCKER_BIN} stop devsecops-staging 2>/dev/null || true
-                    ${DOCKER_BIN} rm devsecops-staging 2>/dev/null || true
-                    
-                    ${DOCKER_BIN} run -d \
-                        --name devsecops-staging \
-                        --network jenkins \
-                        -p ${APP_PORT}:5000 \
-                        ${DOCKER_IMAGE}:${DOCKER_TAG}
-                    
+                    docker stop devsecops-staging 2>/dev/null || true
+                    docker rm devsecops-staging 2>/dev/null || true
+                    docker run -d --name devsecops-staging -p ${APP_PORT}:5000 ${DOCKER_IMAGE}:${DOCKER_TAG}
                     sleep 10
                     curl -f http://localhost:${APP_PORT} || exit 1
                     echo "Application déployée sur http://localhost:${APP_PORT}"
@@ -122,15 +85,8 @@ pipeline {
             steps {
                 echo "Scan dynamique avec OWASP ZAP..."
                 sh '''
-                    ${DOCKER_BIN} pull owasp/zap2docker-stable
-                    ${DOCKER_BIN} run --rm \
-                        --network jenkins \
-                        -v $(pwd):/zap/wrk:rw \
-                        owasp/zap2docker-stable \
-                        zap-baseline.py \
-                        -t http://devsecops-staging:5000 \
-                        -J zap-report.json \
-                        -r zap-report.html || echo "Vulnérabilités détectées (attendu)"
+                    docker run --rm --network host -v $(pwd):/zap/wrk:rw owasp/zap2docker-stable \
+                        zap-baseline.py -t http://localhost:${APP_PORT} -J zap-report.json -r zap-report.html || echo "Vulnérabilités détectées (attendu)"
                 '''
             }
         }
@@ -156,7 +112,6 @@ RÉSUMÉ DES CONTRÔLES DE SÉCURITÉ
         always {
             echo 'Archivage des rapports...'
             archiveArtifacts artifacts: '*-report.*', allowEmptyArchive: true
-            
             publishHTML(target: [
                 allowMissing: true,
                 alwaysLinkToLastBuild: true,
