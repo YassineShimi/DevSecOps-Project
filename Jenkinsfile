@@ -4,20 +4,20 @@ pipeline {
     environment {
         DOCKER_IMAGE = "devsecops-app"
         DOCKER_TAG = "${BUILD_NUMBER}"
-        APP_PORT = "5000"
+        APP_PORT    = "5000"
     }
     
     stages {
-        stage(' Checkout') {
+        stage('Checkout') {
             steps {
-                echo ' Récupération du code source...'
+                echo 'Récupération du code source...'
                 checkout scm
             }
         }
         
         stage('SAST - Analyse statique') {
             steps {
-                echo ' Analyse du code avec Bandit...'
+                echo 'Analyse du code avec Bandit...'
                 sh '''
                     pip3 install bandit || true
                     bandit -r . -f json -o bandit-report.json || true
@@ -27,9 +27,9 @@ pipeline {
             }
         }
         
-        stage(' SCA - Analyse des dépendances') {
+        stage('SCA - Analyse des dépendances') {
             steps {
-                echo ' Vérification des vulnérabilités dans les dépendances...'
+                echo 'Vérification des vulnérabilités dans les dépendances...'
                 sh '''
                     pip3 install safety || true
                     safety check --json --output safety-report.json || true
@@ -38,9 +38,9 @@ pipeline {
             }
         }
         
-        stage(' Secrets Scanning') {
+        stage('Secrets Scanning') {
             steps {
-                echo ' Recherche de secrets exposés avec Gitleaks...'
+                echo 'Recherche de secrets exposés avec Gitleaks...'
                 sh '''
                     docker pull zricethezav/gitleaks:latest
                     docker run --rm -v $(pwd):/path zricethezav/gitleaks:latest \
@@ -54,7 +54,7 @@ pipeline {
         
         stage('Build Docker Image') {
             steps {
-                echo ' Construction de l\'image Docker...'
+                echo "Construction de l'image Docker..."
                 sh '''
                     docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
                     docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
@@ -63,9 +63,9 @@ pipeline {
             }
         }
         
-        stage(' Docker Security Scan') {
+        stage('Docker Security Scan') {
             steps {
-                echo ' Scan de sécurité de l\'image avec Trivy...'
+                echo "Scan de sécurité de l'image avec Trivy..."
                 sh '''
                     docker pull aquasec/trivy:latest
                     docker run --rm \
@@ -85,9 +85,9 @@ pipeline {
             }
         }
         
-        stage(' Deploy to Staging') {
+        stage('Deploy to Staging') {
             steps {
-                echo ' Déploiement en environnement de test...'
+                echo 'Déploiement en environnement de test...'
                 sh '''
                     # Arrêter l'ancien conteneur s'il existe
                     docker stop devsecops-staging 2>/dev/null || true
@@ -105,14 +105,14 @@ pipeline {
                     
                     # Vérifier que l'app répond
                     curl -f http://localhost:${APP_PORT} || exit 1
-                    echo " Application déployée sur http://localhost:${APP_PORT}"
+                    echo "Application déployée sur http://localhost:${APP_PORT}"
                 '''
             }
         }
         
-        stage(' DAST - Tests dynamiques') {
+        stage('DAST - Tests dynamiques') {
             steps {
-                echo 'Scan de sécurité dynamique avec OWASP ZAP...'
+                echo "Scan de sécurité dynamique avec OWASP ZAP..."
                 sh '''
                     docker pull owasp/zap2docker-stable
                     
@@ -134,22 +134,17 @@ pipeline {
                 echo 'Vérification des seuils de sécurité...'
                 script {
                     echo '''
-                    ═══════════════════════════════════════
-                     RÉSUMÉ DES CONTRÔLES DE SÉCURITÉ
-                    ═══════════════════════════════════════
-                    ✓ SAST (Bandit)     : Terminé
-                    ✓ SCA (Safety)      : Terminé
-                    ✓ Secrets (Gitleaks): Terminé
-                    ✓ Docker (Trivy)    : Terminé
-                    ✓ DAST (OWASP ZAP)  : Terminé
-                    ═══════════════════════════════════════
-                    '''
-                    
-                    // En production, vous ajouteriez des conditions ici
-                    // Exemple:
-                    // if (criticalVulnerabilities > 0) {
-                    //     error(" Vulnérabilités critiques détectées!")
-                    // }
+═══════════════════════════════════════
+ RÉSUMÉ DES CONTRÔLES DE SÉCURITÉ
+═══════════════════════════════════════
+✓ SAST (Bandit)     : Terminé
+✓ SCA (Safety)      : Terminé
+✓ Secrets (Gitleaks): Terminé
+✓ Docker (Trivy)    : Terminé
+✓ DAST (OWASP ZAP)  : Terminé
+═══════════════════════════════════════
+'''
+                    // En production, ajouter ici les vérifications des seuils critiques
                 }
             }
         }
@@ -161,28 +156,28 @@ pipeline {
             archiveArtifacts artifacts: '*-report.*', allowEmptyArchive: true
             
             // Publier les rapports HTML
-            publishHTML([
+            publishHTML(target: [
                 allowMissing: true,
                 alwaysLinkToLastBuild: true,
                 keepAll: true,
                 reportDir: '.',
-                reportFiles: 'bandit-report.html, zap-report.html',
+                reportFiles: 'bandit-report.html,zap-report.html',
                 reportName: 'Security Reports'
             ])
         }
-	success {
-  	  echo """
+        success {
+            echo """
 ═══════════════════════════════════════
 PIPELINE TERMINÉ AVEC SUCCÈS !
 ═══════════════════════════════════════
 """
-}
-f	ailure {
-   	 echo """
+        }
+        failure {
+            echo """
 ═══════════════════════════════════════
 PIPELINE ÉCHOUÉ - Consultez les logs
 ═══════════════════════════════════════
 """
-}
+        }
     }
 }
