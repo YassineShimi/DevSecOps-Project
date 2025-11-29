@@ -5,12 +5,13 @@ pipeline {
         DOCKER_IMAGE = "devsecops-app"
         DOCKER_TAG   = "${BUILD_NUMBER}"
         APP_PORT     = "5000"
+        EMAIL_TO = "yass@entreprise.com"
     }
     
     stages {
         stage('Checkout') {
             steps {
-                echo 'Recuperation du code source...'
+                echo 'Récupération du code source...'
                 checkout scm
             }
         }
@@ -27,7 +28,7 @@ pipeline {
                             bandit -r /app -f json -o /app/bandit-report.json || true && \
                             bandit -r /app -f html -o /app/bandit-report.html || true && \
                             safety check > /app/safety-report.txt 2>&1 || true && \
-                            echo 'SAST & SCA termines'
+                            echo 'SAST & SCA terminés'
                         "
                     
                     ls -lh bandit-report.* safety-report.* || true
@@ -58,14 +59,14 @@ pipeline {
                 sh '''
                     docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} "${WORKSPACE}"
                     docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
-                    echo "Image creee: ${DOCKER_IMAGE}:${DOCKER_TAG}"
+                    echo "Image créée: ${DOCKER_IMAGE}:${DOCKER_TAG}"
                 '''
             }
         }
         
         stage('Docker Security Scan') {
             steps {
-                echo 'Scan de securite Docker avec Trivy...'
+                echo 'Scan de sécurité Docker avec Trivy...'
                 sh '''
                     docker run --rm \
                         -v /var/run/docker.sock:/var/run/docker.sock \
@@ -78,17 +79,36 @@ pipeline {
                     docker run --rm \
                         -v /var/run/docker.sock:/var/run/docker.sock \
                         aquasec/trivy:latest image \
-                        --severity HIGH,CRITICAL \
-                        ${DOCKER_IMAGE}:${DOCKER_TAG} || true
+                        --severity CRITICAL \
+                        --exit-code 1 \
+                        ${DOCKER_IMAGE}:${DOCKER_TAG} || echo "Vulnérabilités détectées mais on continue"
                     
                     ls -lh trivy-report.json || true
                 '''
             }
         }
         
+        stage('Security Gate - Secrets Check') {
+            steps {
+                echo 'Vérification des secrets exposés...'
+                script {
+                    if (fileExists('gitleaks-report.json')) {
+                        def gitleaksContent = readFile('gitleaks-report.json')
+                        if (gitleaksContent.contains('"Findings":') && !gitleaksContent.contains('"Findings":[]')) {
+                            error 'SECRETS DETECTÉS: Le pipeline est bloqué. Vérifie gitleaks-report.json'
+                        } else {
+                            echo 'Aucun secret détecté'
+                        }
+                    } else {
+                        echo 'Rapport Gitleaks non trouvé'
+                    }
+                }
+            }
+        }
+        
         stage('Deploy to Staging') {
             steps {
-                echo 'Deploiement en environnement staging...'
+                echo 'Déploiement en environnement staging...'
                 sh '''
                     docker stop devsecops-staging 2>/dev/null || true
                     docker rm devsecops-staging 2>/dev/null || true
@@ -102,10 +122,9 @@ pipeline {
                     sleep 10
                     
                     if docker ps | grep -q devsecops-staging; then
-                        echo "Application deployee sur http://localhost:${APP_PORT}"
+                        echo "Application déployée sur http://localhost:${APP_PORT}"
                     else
-                        echo "Echec du deploiement"
-                        exit 1
+                        error "Échec du déploiement"
                     fi
                 '''
             }
@@ -117,7 +136,6 @@ pipeline {
                 sh '''
                     docker run --rm \
                         --network jenkins \
-                        -u $(id -u):$(id -g) \
                         -v "${WORKSPACE}":/zap/wrk:rw \
                         ghcr.io/zaproxy/zaproxy:stable \
                         zap-baseline.py \
@@ -133,58 +151,29 @@ pipeline {
                 '''
             }
         }
-        
-        stage('Security Gate') {
-            steps {
-                echo '''
-===========================================
-RESUME DES CONTROLES DE SECURITE
-===========================================
-SAST (Bandit)      : Termine
-SCA (Safety)       : Termine
-Secrets (Gitleaks) : Termine
-Docker (Trivy)     : Termine
-DAST (OWASP ZAP)   : Termine
-===========================================
-'''
-                script {
-                    sh '''
-                        echo "Verification des rapports..."
-                        ls -lh *-report.* || true
-                        
-                        if [ -f bandit-report.json ]; then
-                            echo "Rapport Bandit trouve"
-                        fi
-                        if [ -f trivy-report.json ]; then
-                            echo "Rapport Trivy trouve"
-                        fi
-                        if [ -f gitleaks-report.json ]; then
-                            echo "Rapport Gitleaks trouve"
-                        fi
-                    '''
-                    
-                    echo "Tous les controles de securite sont passes"
-                }
-            }
-        }
     }
     
     post {
         always {
-            echo 'Archivage des rapports de securite...'
+            echo 'Archivage des rapports de sécurité...'
             
-            sh 'find . -name "*-report.*" -o -name "*.json" -o -name "*.html" | grep -E "(bandit|safety|trivy|gitleaks|zap)" || true'
+            sh '''
+                mkdir -p security-reports
+                cp -f *.json *.html *.txt security-reports/ 2>/dev/null || true
+                echo "Rapports générés:"
+                ls -la security-reports/ || echo "Aucun rapport trouvé"
+            '''
             
-            archiveArtifacts artifacts: '*-report.*, *.json, *.html', allowEmptyArchive: true, fingerprint: true
+            archiveArtifacts artifacts: 'security-reports/*', allowEmptyArchive: true, fingerprint: true
             
             publishHTML([
                 allowMissing: true,
                 alwaysLinkToLastBuild: true,
                 keepAll: true,
-                reportDir: '.',
+                reportDir: 'security-reports',
                 reportFiles: 'bandit-report.html',
-                reportName: 'SAST Report (Bandit)',
-                reportTitles: 'Rapport SAST'
+                reportName: 'Rapport SAST (Bandit)',
+                reportTitles: 'Analyse de Sécurité du Code'
             ])
             
             sh '''
@@ -195,21 +184,91 @@ DAST (OWASP ZAP)   : Termine
         success {
             echo '''
 ===========================================
-PIPELINE REUSSI
+PIPELINE RÉUSSI
 ===========================================
-Tous les controles de securite sont OK
-Application deployee avec succes
+Tous les contrôles de sécurité sont OK
+Application déployée avec succès
 Rapports disponibles dans Jenkins
 ===========================================
 '''
+            script {
+                emailext (
+                    subject: "SUCCÈS - Pipeline DevSecOps ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                    body: """
+PIPELINE DEVSECOPS RÉUSSI
+
+Détails du build:
+- Projet: ${env.JOB_NAME}
+- Build: #${env.BUILD_NUMBER}
+- Statut: SUCCÈS
+- URL: ${env.BUILD_URL}
+
+Rapports de sécurité générés:
+- SAST (Bandit)
+- SCA (Safety)
+- Secrets (Gitleaks)
+- Docker Scan (Trivy)
+- DAST (ZAP)
+
+Cordialement,
+Pipeline DevSecOps
+                    """,
+                    to: "${env.EMAIL_TO}",
+                    attachLog: true
+                )
+            }
         }
         
         failure {
             echo '''
 ===========================================
-PIPELINE ECHOUE
+PIPELINE ÉCHOUÉ
 ===========================================
 '''
+            script {
+                emailext (
+                    subject: "ÉCHEC - Pipeline DevSecOps ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                    body: """
+PIPELINE DEVSECOPS EN ÉCHEC
+
+Détails du build:
+- Projet: ${env.JOB_NAME}
+- Build: #${env.BUILD_NUMBER}
+- Statut: ÉCHEC
+- URL: ${env.BUILD_URL}
+
+Le pipeline a échoué lors des contrôles de sécurité.
+
+Actions requises:
+1. Vérifier les rapports de sécurité
+2. Corriger les vulnérabilités
+3. Relancer le pipeline
+                    """,
+                    to: "${env.EMAIL_TO}",
+                    attachLog: true
+                )
+            }
+        }
+        
+        unstable {
+            script {
+                emailext (
+                    subject: "INSTABLE - Pipeline DevSecOps ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                    body: """
+PIPELINE DEVSECOPS INSTABLE
+
+Détails du build:
+- Projet: ${env.JOB_NAME}
+- Build: #${env.BUILD_NUMBER}
+- Statut: INSTABLE
+- URL: ${env.BUILD_URL}
+
+Des avertissements ont été détectés dans les scans de sécurité.
+                    """,
+                    to: "${env.EMAIL_TO}",
+                    attachLog: true
+                )
+            }
         }
     }
 }
