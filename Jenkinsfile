@@ -5,7 +5,7 @@ pipeline {
         DOCKER_IMAGE = "devsecops-app"
         DOCKER_TAG   = "${BUILD_NUMBER}"
         APP_PORT     = "5000"
-        EMAIL_TO = "yass@entreprise.com"
+        EMAIL_TO = "yassine.shimi02@gmail.com"
     }
     
     stages {
