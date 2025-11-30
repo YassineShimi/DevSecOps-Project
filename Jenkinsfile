@@ -1,123 +1,119 @@
 pipeline {
-agent any
+    agent any
 
-```
-environment {
-    DOCKER_IMAGE = "devsecops-app"
-    DOCKER_TAG   = "${BUILD_NUMBER}"
-    APP_PORT     = "5000"
-    EMAIL_TO     = "yass@entreprise.com"  // Remplacer par ton email
-    REPORT_DIR   = "reports"
-}
-
-options {
-    timestamps()
-    buildDiscarder(logRotator(numToKeepStr: '10'))
-}
-
-stages {
-    stage('Checkout') {
-        steps {
-            echo 'Récupération du code source...'
-            checkout scm
-        }
+    environment {
+        DOCKER_IMAGE = "devsecops-app"
+        DOCKER_TAG   = "${BUILD_NUMBER}"
+        APP_PORT     = "5000"
+        EMAIL_TO     = "yass@entreprise.com"
+        REPORT_DIR   = "reports"
     }
 
-    stage('Install Dependencies') {
-        steps {
-            echo 'Installation des dépendances Python...'
-            sh 'pip install -r requirements.txt'
-        }
+    options {
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
     }
 
-    stage('Code Quality & SAST') {
-        steps {
-            echo 'Analyse SAST et qualité du code...'
-            // Si vulnérabilités critiques, la build échoue et s'arrête
-            sh '''
-            sonar-scanner \
-              -Dsonar.projectKey=DevSecOpsProject \
-              -Dsonar.sources=. \
-              -Dsonar.host.url=http://localhost:9000 \
-              -Dsonar.login=$SONARQUBE_TOKEN
-            '''
+    stages {
+        stage('Checkout') {
+            steps {
+                echo 'Récupération du code source...'
+                checkout scm
+            }
         }
-        post {
-            always {
-                echo 'Export du rapport SAST'
-                archiveArtifacts artifacts: '**/reports/sonar/*.xml', allowEmptyArchive: true
+
+        stage('Install Dependencies') {
+            steps {
+                echo 'Installation des dépendances Python...'
+                sh 'pip install -r requirements.txt'
+            }
+        }
+
+        stage('Code Quality & SAST') {
+            steps {
+                echo 'Analyse SAST et qualité du code...'
+                sh '''
+                sonar-scanner \
+                  -Dsonar.projectKey=DevSecOpsProject \
+                  -Dsonar.sources=. \
+                  -Dsonar.host.url=http://localhost:9000 \
+                  -Dsonar.login=$SONARQUBE_TOKEN
+                '''
+            }
+            post {
+                always {
+                    echo 'Export du rapport SAST'
+                    archiveArtifacts artifacts: '**/reports/sonar/*.xml', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Dependency Analysis (SCA)') {
+            steps {
+                echo 'Analyse des dépendances (Trivy / OWASP)...'
+                sh '''
+                trivy fs --exit-code 1 --severity HIGH,CRITICAL --format json -o ${REPORT_DIR}/trivy.json .
+                '''
+            }
+        }
+
+        stage('Secrets Scan') {
+            steps {
+                echo 'Scan de secrets avec Gitleaks...'
+                sh '''
+                gitleaks detect --source . --report-path ${REPORT_DIR}/gitleaks.json --exit-code 1
+                '''
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                echo "Construction de l'image Docker ${DOCKER_IMAGE}:${DOCKER_TAG}..."
+                sh "docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} ."
+            }
+        }
+
+        stage('Docker Scan') {
+            steps {
+                echo 'Scan de l’image Docker...'
+                sh '''
+                trivy image --exit-code 1 --severity HIGH,CRITICAL --format json -o ${REPORT_DIR}/docker_scan.json ${DOCKER_IMAGE}:${DOCKER_TAG}
+                '''
+            }
+        }
+
+        stage('Deploy to Staging') {
+            steps {
+                echo 'Déploiement en environnement staging...'
+                sh 'docker run -d -p ${APP_PORT}:5000 ${DOCKER_IMAGE}:${DOCKER_TAG}'
+            }
+        }
+
+        stage('DAST Scan') {
+            steps {
+                echo 'Scan dynamique (DAST) de l’application...'
+                sh '''
+                zap-cli -p 8080 quick-scan http://localhost:${APP_PORT} --self-contained --exit-code 1
+                '''
             }
         }
     }
 
-    stage('Dependency Analysis (SCA)') {
-        steps {
-            echo 'Analyse des dépendances (Trivy / OWASP)...'
-            sh '''
-            trivy fs --exit-code 1 --severity HIGH,CRITICAL --format json -o ${REPORT_DIR}/trivy.json .
-            '''
+    post {
+        always {
+            echo 'Archivage des rapports...'
+            archiveArtifacts artifacts: "${REPORT_DIR}/**", allowEmptyArchive: true
+        }
+        success {
+            mail to: "${EMAIL_TO}",
+                 subject: "SUCCESS - Build #${BUILD_NUMBER}",
+                 body: "La build ${BUILD_NUMBER} a réussi. Tous les rapports ont été générés et archivés."
+        }
+        failure {
+            mail to: "${EMAIL_TO}",
+                 subject: "FAILURE - Build #${BUILD_NUMBER}",
+                 body: "La build ${BUILD_NUMBER} a échoué. Vérifiez les logs et rapports pour corriger les problèmes critiques."
         }
     }
-
-    stage('Secrets Scan') {
-        steps {
-            echo 'Scan de secrets avec Gitleaks...'
-            sh '''
-            gitleaks detect --source . --report-path ${REPORT_DIR}/gitleaks.json --exit-code 1
-            '''
-        }
-    }
-
-    stage('Build Docker Image') {
-        steps {
-            echo "Construction de l'image Docker ${DOCKER_IMAGE}:${DOCKER_TAG}..."
-            sh "docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} ."
-        }
-    }
-
-    stage('Docker Scan') {
-        steps {
-            echo 'Scan de l’image Docker...'
-            sh '''
-            trivy image --exit-code 1 --severity HIGH,CRITICAL --format json -o ${REPORT_DIR}/docker_scan.json ${DOCKER_IMAGE}:${DOCKER_TAG}
-            '''
-        }
-    }
-
-    stage('Deploy to Staging') {
-        steps {
-            echo 'Déploiement en environnement staging...'
-            sh 'docker run -d -p ${APP_PORT}:5000 ${DOCKER_IMAGE}:${DOCKER_TAG}'
-        }
-    }
-
-    stage('DAST Scan') {
-        steps {
-            echo 'Scan dynamique (DAST) de l’application...'
-            sh '''
-            zap-cli -p 8080 quick-scan http://localhost:${APP_PORT} --self-contained --exit-code 1
-            '''
-        }
-    }
-}
-
-post {
-    always {
-        echo 'Archivage des rapports...'
-        archiveArtifacts artifacts: "${REPORT_DIR}/**", allowEmptyArchive: true
-    }
-    success {
-        mail to: "${EMAIL_TO}",
-             subject: "SUCCESS - Build #${BUILD_NUMBER}",
-             body: "La build ${BUILD_NUMBER} a réussi. Tous les rapports ont été générés et archivés."
-    }
-    failure {
-        mail to: "${EMAIL_TO}",
-             subject: "FAILURE - Build #${BUILD_NUMBER}",
-             body: "La build ${BUILD_NUMBER} a échoué. Vérifiez les logs et rapports pour corriger les problèmes critiques."
-    }
-}
-```
-
 }
 
