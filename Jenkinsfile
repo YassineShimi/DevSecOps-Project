@@ -6,115 +6,177 @@ pipeline {
         DOCKER_TAG   = "${BUILD_NUMBER}"
         APP_PORT     = "5000"
         EMAIL_TO     = "vipertn2@gmail.com"
-        EMAIL_FROM   = "yassine.shimi02@gmail.com"
+    }
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
     }
 
     stages {
+
         stage('Checkout') {
             steps {
-                echo '🔍 Recuperation du code source...'
+                echo "Récupération du code source"
                 checkout scm
             }
         }
 
-        stage('SAST & SCA') {
+        stage('SAST - Analyse statique') {
             steps {
-                echo '🔍 Analyse du code avec Bandit et Safety...'
+                echo "Analyse du code avec Bandit"
                 sh '''
                     docker run --rm -v "${WORKSPACE}":/app -w /app python:3.12-slim bash -c "
-                        pip install --quiet bandit safety && \
-                        bandit -r /app -f html -o /app/bandit-report.html || true && \
-                        safety check || true
+                        pip install bandit && \
+                        bandit -r /app -f json -o /app/bandit-report.json
                     "
-                    # Create fallback reports
-                    [ -f bandit-report.html ] || echo '<html><body><h1>Bandit Report</h1><p>Code analysis completed</p></body></html>' > bandit-report.html
-                    echo "Safety scan completed" > safety-report.txt
                 '''
+            }
+            post {
+                success {
+                    script {
+                        def report = readJSON file: 'bandit-report.json'
+                        def issues = report.results.size()
+                        if (issues > 0) {
+                            error "Bandit a détecté ${issues} vulnérabilités. Arrêt du pipeline."
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('SCA - Analyse des dépendances') {
+            steps {
+                echo "Analyse SCA avec Safety"
+                sh '''
+                    docker run --rm -v "${WORKSPACE}":/src python:3.12-slim bash -c "
+                        pip install safety && \
+                        safety scan --json > /src/safety-report.json
+                    "
+                '''
+            }
+            post {
+                success {
+                    script {
+                        def data = readJSON file: 'safety-report.json'
+                        if (data.vulnerabilities && data.vulnerabilities.size() > 0) {
+                            error "Safety a détecté des vulnérabilités. Arrêt du pipeline."
+                        }
+                    }
+                }
             }
         }
 
         stage('Secrets Scanning') {
             steps {
-                echo '🔑 Recherche de secrets avec Gitleaks...'
+                echo "Recherche de secrets avec Gitleaks"
                 sh '''
-                    docker run --rm -v "${WORKSPACE}":/path zricethezav/gitleaks:latest detect \
-                        --source="/path" --report-format=json --report-path=/path/gitleaks-report.json --no-git || true
-                    # Create fallback report
-                    [ -f gitleaks-report.json ] || echo '{"findings":[]}' > gitleaks-report.json
+                    docker run --rm -v "${WORKSPACE}":/src zricethezav/gitleaks detect \
+                        --source=/src --report-path=/src/gitleaks-report.json --report-format=json
                 '''
+            }
+            post {
+                success {
+                    script {
+                        def gl = readJSON file: 'gitleaks-report.json'
+                        if (gl.findings && gl.findings.size() > 0) {
+                            error "Gitleaks a détecté des secrets exposés. Arrêt du pipeline."
+                        }
+                    }
+                }
             }
         }
 
         stage('Build Docker Image') {
             steps {
-                echo '🐳 Construction de l image Docker...'
-                sh '''
-                    docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} "${WORKSPACE}"
+                echo "Construction de l'image Docker"
+                sh """
+                    docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
                     docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
-                '''
+                """
             }
         }
 
-        stage('Docker Security Scan') {
+        stage('Docker Scan - Trivy') {
             steps {
-                echo '🔒 Scan de securite Docker avec Trivy...'
+                echo "Scan de l'image Docker avec Trivy"
                 sh '''
-                    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "${WORKSPACE}":/output \
-                        aquasec/trivy:latest image --format json --output /output/trivy-report.json \
-                        ${DOCKER_IMAGE}:${DOCKER_TAG} || true
-                    # Create fallback report
-                    [ -f trivy-report.json ] || echo '{"Results":[]}' > trivy-report.json
+                    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                        -v "${WORKSPACE}":/output aquasec/trivy:latest image \
+                        --severity CRITICAL,HIGH \
+                        --format json --output /output/trivy-report.json \
+                        ${DOCKER_IMAGE}:${DOCKER_TAG}
                 '''
+            }
+            post {
+                success {
+                    script {
+                        def trivy = readJSON file: 'trivy-report.json'
+                        for (res in trivy.Results) {
+                            if (res.Vulnerabilities) {
+                                def criticals = res.Vulnerabilities.findAll { it.Severity in ["HIGH", "CRITICAL"] }
+                                if (criticals.size() > 0) {
+                                    error "Trivy a détecté des vulnérabilités HIGH/CRITICAL. Arrêt du pipeline."
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
         stage('Deploy to Staging') {
             steps {
-                echo '🚀 Deploiement en environnement staging...'
+                echo "Déploiement en environnement staging"
                 sh '''
                     docker stop devsecops-staging 2>/dev/null || true
                     docker rm devsecops-staging 2>/dev/null || true
-                    docker run -d --name devsecops-staging --network jenkins -p ${APP_PORT}:5000 ${DOCKER_IMAGE}:${DOCKER_TAG}
+                    docker run -d --name devsecops-staging --network jenkins \
+                        -p ${APP_PORT}:5000 ${DOCKER_IMAGE}:${DOCKER_TAG}
                     sleep 10
                 '''
             }
         }
 
-        stage('DAST - Tests dynamiques') {
+        stage('DAST - OWASP ZAP') {
             steps {
-                echo '🌐 Scan DAST avec OWASP ZAP...'
+                echo "Scan DAST OWASP ZAP"
                 sh '''
-                    docker run --rm --network jenkins -v "${WORKSPACE}":/zap/wrk:rw \
+                    docker run --rm --network jenkins \
+                        -v "${WORKSPACE}":/zap/wrk:rw \
                         ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
                         -t http://devsecops-staging:5000 \
-                        -J zap-report.json -r zap-report.html || true
-                    # Create fallback reports
-                    [ -f zap-report.html ] || echo '<html><body><h1>ZAP Report</h1><p>DAST scan completed</p></body></html>' > zap-report.html
-                    [ -f zap-report.json ] || echo '{"alerts":[]}' > zap-report.json
+                        -J zap-report.json -r zap-report.html
                 '''
+            }
+            post {
+                success {
+                    script {
+                        def zap = readJSON file: 'zap-report.json'
+                        def alerts = zap.site[0].alerts.findAll { it.riskcode == "3" } // High
+                        if (alerts.size() > 0) {
+                            error "ZAP a détecté des vulnérabilités HIGH. Arrêt du pipeline."
+                        }
+                    }
+                }
             }
         }
 
-        stage('Generate Security Report') {
+        stage('Generate Final Report') {
             steps {
-                echo '📊 Generation du rapport global...'
+                echo "Génération du rapport final"
                 sh '''
-                    cat > security-report.html << 'EOF'
-<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Rapport de Sécurité DevSecOps</title></head>
-<body>
-<h1>Rapport de Sécurité DevSecOps</h1>
-<p>Build #${BUILD_NUMBER}</p>
+                    cat > security-report.html <<EOF
+<html><body>
+<h1>Rapport de Sécurité</h1>
 <ul>
-<li><a href="bandit-report.html">SAST - Bandit</a></li>
-<li><a href="safety-report.txt">SCA - Safety</a></li>
+<li><a href="bandit-report.json">SAST - Bandit</a></li>
+<li><a href="safety-report.json">SCA - Safety</a></li>
 <li><a href="gitleaks-report.json">Secrets - Gitleaks</a></li>
-<li><a href="trivy-report.json">Docker Scan - Trivy</a></li>
-<li><a href="zap-report.html">DAST - OWASP ZAP</a></li>
+<li><a href="trivy-report.json">Docker - Trivy</a></li>
+<li><a href="zap-report.html">DAST - ZAP</a></li>
 </ul>
-</body>
-</html>
+</body></html>
 EOF
                 '''
             }
@@ -123,35 +185,30 @@ EOF
 
     post {
         always {
-            echo '📦 Archivage des rapports...'
-            archiveArtifacts artifacts: '*-report.*, *.json, *.html, *.txt', allowEmptyArchive: true, fingerprint: true
+            echo "Archivage des rapports"
+            archiveArtifacts artifacts: '*.json, *.html', allowEmptyArchive: false
             publishHTML([
-                allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true,
-                reportDir: '.', reportFiles: 'security-report.html', reportName: 'Security Dashboard'
+                allowMissing: false,
+                keepAll: true,
+                reportDir: '.',
+                reportFiles: 'security-report.html',
+                reportName: 'Security Dashboard'
             ])
-
-            script {
-                def summary = """
-Pipeline: ${env.JOB_NAME}
-Build: #${env.BUILD_NUMBER}
-Status: ${currentBuild.result ?: 'SUCCESS'}
-
-Rapports disponibles:
-- Dashboard: ${env.BUILD_URL}Security_20Dashboard/
-- Bandit: ${env.BUILD_URL}artifact/bandit-report.html
-- Safety: ${env.BUILD_URL}artifact/safety-report.txt
-- Gitleaks: ${env.BUILD_URL}artifact/gitleaks-report.json
-- Trivy: ${env.BUILD_URL}artifact/trivy-report.json
-- ZAP: ${env.BUILD_URL}artifact/zap-report.html
-
-Tous les scans de sécurité ont été exécutés avec succès.
-"""
-                mail(
-                    to: "${EMAIL_TO}",
-                    subject: "DevSecOps SUCCESS - Build #${env.BUILD_NUMBER}",
-                    body: summary
-                )
-            }
+        }
+        failure {
+            mail(
+                to: "${EMAIL_TO}",
+                subject: "DevSecOps Pipeline FAILED - Build #${env.BUILD_NUMBER}",
+                body: "Le pipeline a échoué suite à la détection d'une vulnérabilité."
+            )
+        }
+        success {
+            mail(
+                to: "${EMAIL_TO}",
+                subject: "DevSecOps Pipeline SUCCESS - Build #${env.BUILD_NUMBER}",
+                body: "Tous les contrôles ont été validés sans vulnérabilités."
+            )
         }
     }
 }
+
