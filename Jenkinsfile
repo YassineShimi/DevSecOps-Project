@@ -1,5 +1,10 @@
 pipeline {
-    agent any
+    agent {
+        docker {
+            image 'python:3.13-slim'  // Python + pip déjà présent
+            args '-u root:root'        // pour installer des paquets et accéder à Docker
+        }
+    }
 
     environment {
         DOCKER_IMAGE = "devsecops-app"
@@ -26,8 +31,8 @@ pipeline {
             steps {
                 echo 'Installation des dépendances Python...'
                 sh '''
-                python3 -m pip install --upgrade pip
-                python3 -m pip install -r requirements.txt
+                    python -m pip install --upgrade pip
+                    pip install -r requirements.txt
                 '''
             }
         }
@@ -36,11 +41,11 @@ pipeline {
             steps {
                 echo 'Analyse SAST et qualité du code...'
                 sh '''
-                sonar-scanner \
-                  -Dsonar.projectKey=DevSecOpsProject \
-                  -Dsonar.sources=. \
-                  -Dsonar.host.url=http://localhost:9000 \
-                  -Dsonar.login=$SONARQUBE_TOKEN
+                    sonar-scanner \
+                      -Dsonar.projectKey=DevSecOpsProject \
+                      -Dsonar.sources=. \
+                      -Dsonar.host.url=http://localhost:9000 \
+                      -Dsonar.login=$SONARQUBE_TOKEN
                 '''
             }
             post {
@@ -54,7 +59,8 @@ pipeline {
             steps {
                 echo 'Analyse des dépendances (Trivy / OWASP)...'
                 sh '''
-                trivy fs --exit-code 1 --severity HIGH,CRITICAL --format json -o ${REPORT_DIR}/trivy.json .
+                    mkdir -p ${REPORT_DIR}
+                    trivy fs --exit-code 1 --severity HIGH,CRITICAL --format json -o ${REPORT_DIR}/trivy.json .
                 '''
             }
         }
@@ -63,7 +69,8 @@ pipeline {
             steps {
                 echo 'Scan de secrets avec Gitleaks...'
                 sh '''
-                gitleaks detect --source . --report-path ${REPORT_DIR}/gitleaks.json --exit-code 1
+                    mkdir -p ${REPORT_DIR}
+                    gitleaks detect --source . --report-path ${REPORT_DIR}/gitleaks.json --exit-code 1
                 '''
             }
         }
@@ -79,7 +86,8 @@ pipeline {
             steps {
                 echo 'Scan de l’image Docker...'
                 sh '''
-                trivy image --exit-code 1 --severity HIGH,CRITICAL --format json -o ${REPORT_DIR}/docker_scan.json ${DOCKER_IMAGE}:${DOCKER_TAG}
+                    mkdir -p ${REPORT_DIR}
+                    trivy image --exit-code 1 --severity HIGH,CRITICAL --format json -o ${REPORT_DIR}/docker_scan.json ${DOCKER_IMAGE}:${DOCKER_TAG}
                 '''
             }
         }
@@ -87,7 +95,7 @@ pipeline {
         stage('Deploy to Staging') {
             steps {
                 echo 'Déploiement en environnement staging...'
-                sh 'docker run -d -p ${APP_PORT}:5000 ${DOCKER_IMAGE}:${DOCKER_TAG}'
+                sh "docker run -d -p ${APP_PORT}:5000 ${DOCKER_IMAGE}:${DOCKER_TAG}"
             }
         }
 
@@ -95,7 +103,7 @@ pipeline {
             steps {
                 echo 'Scan dynamique (DAST) de l’application...'
                 sh '''
-                zap-cli -p 8080 quick-scan http://localhost:${APP_PORT} --self-contained --exit-code 1
+                    zap-cli -p 8080 quick-scan http://localhost:${APP_PORT} --self-contained --exit-code 1
                 '''
             }
         }
