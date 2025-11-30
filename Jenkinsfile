@@ -103,8 +103,9 @@ pipeline {
                 echo "Tests de securite dynamiques avec OWASP ZAP sur le port ${STAGING_PORT}..."
                 sh '''
                     sleep 30
+                    # Utiliser l image officielle ZAP de GitHub Container Registry
                     docker run --rm -v ${WORKSPACE}/reports:/zap/wrk/:rw \
-                    -t owasp/zap2docker-stable zap-baseline.py \
+                    ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
                     -t http://host.docker.internal:''' + env.STAGING_PORT + ''' \
                     -J /zap/wrk/zap_report.json \
                     -r /zap/wrk/zap_report.html
