@@ -34,13 +34,13 @@ pipeline {
             steps {
                 echo 'Analyse rapide des dependances avec Trivy...'
                 sh '''
-                    # Analyser les dependances du projet
+                    # Analyser les dependances du projet avec rapport JSON
                     docker run --rm -v ${WORKSPACE}:/app aquasec/trivy:latest \
                     fs --format json --output /app/reports/trivy_fs_report.json /app
                     
-                    # Generer aussi un rapport HTML pour visualisation
+                    # Afficher les resultats dans la console
                     docker run --rm -v ${WORKSPACE}:/app aquasec/trivy:latest \
-                    fs --format html --output /app/reports/trivy_fs_report.html /app
+                    fs --format table /app
                 '''
             }
         }
@@ -66,14 +66,14 @@ pipeline {
             steps {
                 echo 'Scan securite Docker avec Trivy...'
                 sh '''
+                    # Scan de l image avec rapport JSON
                     docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
                     -v ${WORKSPACE}/reports:/reports aquasec/trivy:latest \
                     image --format json --output /reports/trivy_image_report.json ${DOCKER_IMAGE}:${DOCKER_TAG}
                     
-                    # Rapport HTML pour l'image
+                    # Afficher les resultats dans la console
                     docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-                    -v ${WORKSPACE}/reports:/reports aquasec/trivy:latest \
-                    image --format html --output /reports/trivy_image_report.html ${DOCKER_IMAGE}:${DOCKER_TAG}
+                    aquasec/trivy:latest image --format table ${DOCKER_IMAGE}:${DOCKER_TAG}
                 '''
             }
         }
