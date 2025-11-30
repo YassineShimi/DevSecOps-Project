@@ -24,7 +24,7 @@ pipeline {
             steps {
                 echo 'Installation des dependances Python...'
                 sh '''
-                    pip3 install -r requirements.txt
+                    python3 -m pip install --user -r requirements.txt
                 '''
             }
         }
@@ -33,8 +33,8 @@ pipeline {
             steps {
                 echo 'Analyse statique avec Bandit...'
                 sh '''
-                    pip3 install bandit
-                    bandit -r . -f html -o reports/bandit_report.html
+                    python3 -m pip install --user bandit
+                    python3 -m bandit -r . -f html -o reports/bandit_report.html
                 '''
             }
         }
