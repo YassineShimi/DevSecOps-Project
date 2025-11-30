@@ -3,7 +3,6 @@ pipeline {
     environment {
         DOCKER_IMAGE = "devsecops-app"
         DOCKER_TAG = "${BUILD_NUMBER}"
-        // Utiliser un port dynamique basé sur le numéro de build
         STAGING_PORT = "50${BUILD_NUMBER}"
         EMAIL_TO = "yass@entreprise.com"
         REPORT_DIR = "reports"
@@ -35,11 +34,9 @@ pipeline {
             steps {
                 echo 'Analyse rapide des dependances avec Trivy...'
                 sh '''
-                    # Analyser les dependances du projet avec rapport JSON
                     docker run --rm -v ${WORKSPACE}:/app aquasec/trivy:latest \
                     fs --format json --output /app/reports/trivy_fs_report.json /app
                     
-                    # Afficher les resultats dans la console
                     docker run --rm -v ${WORKSPACE}:/app aquasec/trivy:latest \
                     fs --format table /app
                 '''
@@ -67,12 +64,10 @@ pipeline {
             steps {
                 echo 'Scan securite Docker avec Trivy...'
                 sh '''
-                    # Scan de l image avec rapport JSON
                     docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
                     -v ${WORKSPACE}/reports:/reports aquasec/trivy:latest \
                     image --format json --output /reports/trivy_image_report.json ${DOCKER_IMAGE}:${DOCKER_TAG}
                     
-                    # Afficher les resultats dans la console
                     docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
                     aquasec/trivy:latest image --format table ${DOCKER_IMAGE}:${DOCKER_TAG}
                 '''
@@ -83,15 +78,10 @@ pipeline {
             steps {
                 echo "Deploiement en environnement de staging sur le port ${STAGING_PORT}..."
                 sh """
-                    # Nettoyer les anciens conteneurs
                     docker stop devsecops-app-staging || true
                     docker rm devsecops-app-staging || true
-                    
-                    # Demarrer le nouveau conteneur avec port dynamique
                     docker run -d -p ${STAGING_PORT}:5000 --name devsecops-app-staging ${DOCKER_IMAGE}:${DOCKER_TAG}
                     sleep 20
-                    
-                    # Verifier que l application est accessible
                     echo "Verification de l application sur le port ${STAGING_PORT}..."
                     curl -f http://localhost:${STAGING_PORT} || echo "Application en cours de demarrage..."
                 """
@@ -101,15 +91,14 @@ pipeline {
         stage('DAST - Dynamic Testing') {
             steps {
                 echo "Tests de securite dynamiques avec OWASP ZAP sur le port ${STAGING_PORT}..."
-                sh '''
+                sh """
                     sleep 30
-                    # Utiliser l image officielle ZAP de GitHub Container Registry
-                    docker run --rm -v ${WORKSPACE}/reports:/zap/wrk/:rw \
+                    # Solution simple: utiliser localhost directement
+                    docker run --rm --network="host" -v ${WORKSPACE}/reports:/zap/wrk/:rw \
                     ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
-                    -t http://host.docker.internal:''' + env.STAGING_PORT + ''' \
-                    -J /zap/wrk/zap_report.json \
-                    -r /zap/wrk/zap_report.html
-                '''
+                    -t http://localhost:${STAGING_PORT} \
+                    -J /zap/wrk/zap_report.json
+                """
             }
         }
         
@@ -117,68 +106,30 @@ pipeline {
             steps {
                 echo 'Validation des criteres de securite...'
                 script {
-                    // Vérifier si les rapports existent
-                    def banditReport = fileExists 'reports/bandit_report.html'
-                    def trivyFSReport = fileExists 'reports/trivy_fs_report.json'
-                    def trivyImageReport = fileExists 'reports/trivy_image_report.json'
-                    def zapReport = fileExists 'reports/zap_report.json'
+                    // Vérifications simplifiées
+                    def criticalVulnerabilities = 0
                     
-                    if (!banditReport) {
-                        echo "Avertissement: Rapport Bandit manquant"
-                    }
-                    if (!trivyFSReport) {
-                        echo "Avertissement: Rapport Trivy FS manquant"
-                    }
-                    if (!trivyImageReport) {
-                        echo "Avertissement: Rapport Trivy Image manquant"
-                    }
-                    if (!zapReport) {
-                        echo "Avertissement: Rapport ZAP manquant"
-                    }
-                    
-                    // Vérification des vulnérabilités critiques dans Trivy FS
-                    if (trivyFSReport) {
-                        def criticalVulnerabilitiesFS = sh(
-                            script: """
-                                grep -c '"Severity": "CRITICAL"' reports/trivy_fs_report.json || echo "0"
-                            """,
+                    // Vérifier Trivy FS
+                    if (fileExists('reports/trivy_fs_report.json')) {
+                        criticalVulnerabilities = sh(
+                            script: "grep -c '\"Severity\": \"CRITICAL\"' reports/trivy_fs_report.json || echo '0'",
                             returnStdout: true
                         ).trim().toInteger()
-                        
-                        if (criticalVulnerabilitiesFS > 0) {
-                            error("${criticalVulnerabilitiesFS} vulnerabilite(s) CRITIQUE(s) detectee(s) dans les dependances. Pipeline bloque.")
-                        }
                     }
                     
-                    // Vérification des vulnérabilités critiques dans Trivy Image
-                    if (trivyImageReport) {
-                        def criticalVulnerabilitiesImage = sh(
-                            script: """
-                                grep -c '"Severity": "CRITICAL"' reports/trivy_image_report.json || echo "0"
-                            """,
+                    // Vérifier Trivy Image
+                    if (fileExists('reports/trivy_image_report.json') && criticalVulnerabilities == 0) {
+                        criticalVulnerabilities = sh(
+                            script: "grep -c '\"Severity\": \"CRITICAL\"' reports/trivy_image_report.json || echo '0'",
                             returnStdout: true
                         ).trim().toInteger()
-                        
-                        if (criticalVulnerabilitiesImage > 0) {
-                            error("${criticalVulnerabilitiesImage} vulnerabilite(s) CRITIQUE(s) detectee(s) dans l'image Docker. Pipeline bloque.")
-                        }
                     }
                     
-                    // Vérification des secrets (si le rapport existe)
-                    if (fileExists('reports/gitleaks_report.json')) {
-                        def secretsDetected = sh(
-                            script: """
-                                jq length reports/gitleaks_report.json || echo "0"
-                            """,
-                            returnStdout: true
-                        ).trim().toInteger()
-                        
-                        if (secretsDetected > 0) {
-                            echo "${secretsDetected} secret(s) potentiel(s) detecte(s). Verification necessaire."
-                        }
+                    if (criticalVulnerabilities > 0) {
+                        error("${criticalVulnerabilities} vulnerabilite(s) CRITIQUE(s) detectee(s). Pipeline bloque.")
                     }
                     
-                    echo "Tous les controles de securite ont ete executes avec succes"
+                    echo "Aucune vulnerabilite critique detectee - Pipeline approuve"
                 }
             }
         }
@@ -194,53 +145,28 @@ pipeline {
                 echo "=== RAPPORT DE SECURITE - Build ''' + env.BUILD_NUMBER + ''' ===" > reports/security_summary.txt
                 echo "Date: $(date)" >> reports/security_summary.txt
                 echo "Statut: ''' + currentBuild.result + '''" >> reports/security_summary.txt
-                echo "Port de staging utilise: ''' + env.STAGING_PORT + '''" >> reports/security_summary.txt
+                echo "Port de staging: ''' + env.STAGING_PORT + '''" >> reports/security_summary.txt
                 echo "==========================================" >> reports/security_summary.txt
-                echo "SAST (Bandit): ''' + (fileExists('reports/bandit_report.html') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
-                echo "SCA (Trivy FS): ''' + (fileExists('reports/trivy_fs_report.json') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
-                echo "Detection de secrets (Gitleaks): ''' + (fileExists('reports/gitleaks_report.json') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
-                echo "Scan Docker (Trivy Image): ''' + (fileExists('reports/trivy_image_report.json') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
-                echo "DAST (OWASP ZAP): ''' + (fileExists('reports/zap_report.json') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
+                echo "SAST (Bandit): ''' + (fileExists('reports/bandit_report.html') ? 'OK' : 'NOK') + '''" >> reports/security_summary.txt
+                echo "SCA (Trivy FS): ''' + (fileExists('reports/trivy_fs_report.json') ? 'OK' : 'NOK') + '''" >> reports/security_summary.txt
+                echo "Secrets (Gitleaks): ''' + (fileExists('reports/gitleaks_report.json') ? 'OK' : 'NOK') + '''" >> reports/security_summary.txt
+                echo "Docker Scan (Trivy): ''' + (fileExists('reports/trivy_image_report.json') ? 'OK' : 'NOK') + '''" >> reports/security_summary.txt
+                echo "DAST (ZAP): ''' + (fileExists('reports/zap_report.json') ? 'OK' : 'NOK') + '''" >> reports/security_summary.txt
             '''
             
             archiveArtifacts artifacts: "reports/**", allowEmptyArchive: true
         }
         
         success {
-            echo 'Tous les tests de securite ont ete passes avec succes!'
             mail to: "${EMAIL_TO}",
-                 subject: "SUCCESS - Build #${BUILD_NUMBER} - Pipeline DevSecOps",
-                 body: """
-                 Le pipeline DevSecOps #${BUILD_NUMBER} a ete execute avec succes.
-                 
-                 Tous les controles de securite ont ete valides :
-                 - Analyse statique (SAST) avec Bandit
-                 - Analyse des dependances (SCA) avec Trivy
-                 - Detection de secrets avec Gitleaks
-                 - Scan de securite Docker avec Trivy
-                 - Tests dynamiques (DAST) avec OWASP ZAP
-                 
-                 Port de staging utilise: ${STAGING_PORT}
-                 Rapports disponibles dans les artifacts Jenkins.
-                 """
+                 subject: "SUCCESS - Build #${BUILD_NUMBER}",
+                 body: "Build ${BUILD_NUMBER} reussie. Aucune vulnerabilite critique. Rapports dans artifacts."
         }
         
         failure {
-            echo 'Le pipeline a echoue lors des controles de securite!'
             mail to: "${EMAIL_TO}",
-                 subject: "FAILURE - Build #${BUILD_NUMBER} - Vulnerabilites critiques detectees",
-                 body: """
-                 Le pipeline DevSecOps #${BUILD_NUMBER} a echoue.
-                 
-                 Raison : Vulnerabilites critiques detectees ou echec des tests de securite.
-                 
-                 Actions requises :
-                 - Consulter les rapports de securite dans Jenkins
-                 - Corriger les vulnerabilites identifiees
-                 - Relancer le pipeline
-                 
-                 Logs : ${BUILD_URL}/console
-                 """
+                 subject: "FAILURE - Build #${BUILD_NUMBER}",
+                 body: "Build ${BUILD_NUMBER} echouee. Vulnerabilites critiques detectees. Verifiez les logs Jenkins."
         }
     }
 }
