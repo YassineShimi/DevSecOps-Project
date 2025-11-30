@@ -20,11 +20,13 @@ pipeline {
             }
         }
         
-        stage('Install Dependencies') {
+        stage('Create Virtual Environment') {
             steps {
-                echo 'Installation des dependances Python...'
+                echo 'Creation environnement virtuel...'
                 sh '''
-                    python3 -m pip install --user -r requirements.txt
+                    python3 -m venv myenv
+                    . myenv/bin/activate
+                    pip install -r requirements.txt
                 '''
             }
         }
@@ -33,8 +35,9 @@ pipeline {
             steps {
                 echo 'Analyse statique avec Bandit...'
                 sh '''
-                    python3 -m pip install --user bandit
-                    python3 -m bandit -r . -f html -o reports/bandit_report.html
+                    . myenv/bin/activate
+                    pip install bandit
+                    bandit -r . -f html -o reports/bandit_report.html
                 '''
             }
         }
