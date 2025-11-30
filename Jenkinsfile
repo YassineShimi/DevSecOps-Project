@@ -3,7 +3,8 @@ pipeline {
     environment {
         DOCKER_IMAGE = "devsecops-app"
         DOCKER_TAG = "${BUILD_NUMBER}"
-        APP_PORT = "5000"
+        // Utiliser un port dynamique basé sur le numéro de build
+        STAGING_PORT = "50${BUILD_NUMBER}"
         EMAIL_TO = "yass@entreprise.com"
         REPORT_DIR = "reports"
     }
@@ -80,24 +81,31 @@ pipeline {
         
         stage('Deploy to Staging') {
             steps {
-                echo 'Deploiement en environnement de staging...'
+                echo "Deploiement en environnement de staging sur le port ${STAGING_PORT}..."
                 sh """
+                    # Nettoyer les anciens conteneurs
                     docker stop devsecops-app-staging || true
                     docker rm devsecops-app-staging || true
-                    docker run -d -p ${APP_PORT}:5000 --name devsecops-app-staging ${DOCKER_IMAGE}:${DOCKER_TAG}
+                    
+                    # Demarrer le nouveau conteneur avec port dynamique
+                    docker run -d -p ${STAGING_PORT}:5000 --name devsecops-app-staging ${DOCKER_IMAGE}:${DOCKER_TAG}
                     sleep 20
+                    
+                    # Verifier que l application est accessible
+                    echo "Verification de l application sur le port ${STAGING_PORT}..."
+                    curl -f http://localhost:${STAGING_PORT} || echo "Application en cours de demarrage..."
                 """
             }
         }
         
         stage('DAST - Dynamic Testing') {
             steps {
-                echo 'Tests de securite dynamiques avec OWASP ZAP...'
+                echo "Tests de securite dynamiques avec OWASP ZAP sur le port ${STAGING_PORT}..."
                 sh '''
                     sleep 30
                     docker run --rm -v ${WORKSPACE}/reports:/zap/wrk/:rw \
                     -t owasp/zap2docker-stable zap-baseline.py \
-                    -t http://host.docker.internal:5000 \
+                    -t http://host.docker.internal:''' + env.STAGING_PORT + ''' \
                     -J /zap/wrk/zap_report.json \
                     -r /zap/wrk/zap_report.html
                 '''
@@ -185,6 +193,7 @@ pipeline {
                 echo "=== RAPPORT DE SECURITE - Build ''' + env.BUILD_NUMBER + ''' ===" > reports/security_summary.txt
                 echo "Date: $(date)" >> reports/security_summary.txt
                 echo "Statut: ''' + currentBuild.result + '''" >> reports/security_summary.txt
+                echo "Port de staging utilise: ''' + env.STAGING_PORT + '''" >> reports/security_summary.txt
                 echo "==========================================" >> reports/security_summary.txt
                 echo "SAST (Bandit): ''' + (fileExists('reports/bandit_report.html') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
                 echo "SCA (Trivy FS): ''' + (fileExists('reports/trivy_fs_report.json') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
@@ -210,6 +219,7 @@ pipeline {
                  - Scan de securite Docker avec Trivy
                  - Tests dynamiques (DAST) avec OWASP ZAP
                  
+                 Port de staging utilise: ${STAGING_PORT}
                  Rapports disponibles dans les artifacts Jenkins.
                  """
         }
