@@ -183,32 +183,36 @@ EOF
         }
     }
 
-    post {
-        always {
-            echo "Archivage des rapports"
-            archiveArtifacts artifacts: '*.json, *.html', allowEmptyArchive: false
-            publishHTML([
-                allowMissing: false,
-                keepAll: true,
-                reportDir: '.',
-                reportFiles: 'security-report.html',
-                reportName: 'Security Dashboard'
-            ])
-        }
-        failure {
-            mail(
-                to: "${EMAIL_TO}",
-                subject: "DevSecOps Pipeline FAILED - Build #${env.BUILD_NUMBER}",
-                body: "Le pipeline a échoué suite à la détection d'une vulnérabilité."
-            )
-        }
-        success {
-            mail(
-                to: "${EMAIL_TO}",
-                subject: "DevSecOps Pipeline SUCCESS - Build #${env.BUILD_NUMBER}",
-                body: "Tous les contrôles ont été validés sans vulnérabilités."
-            )
-        }
+  post {
+    always {
+        echo "Archivage des rapports"
+        archiveArtifacts artifacts: '*.json, *.html', allowEmptyArchive: false
+
+        publishHTML([
+            reportDir: '.',
+            reportFiles: 'security-report.html',
+            reportName: 'Security Dashboard',
+            keepAll: true,
+            allowMissing: false,
+            alwaysLinkToLastBuild: false,
+            alwaysLinkToLastSuccessfulBuild: false
+        ])
+    }
+
+    failure {
+        mail(
+            to: "${EMAIL_TO}",
+            subject: "DevSecOps Pipeline FAILED - Build #${env.BUILD_NUMBER}",
+            body: "Le pipeline a échoué suite à la détection d'une vulnérabilité."
+        )
+    }
+
+    success {
+        mail(
+            to: "${EMAIL_TO}",
+            subject: "DevSecOps Pipeline SUCCESS - Build #${env.BUILD_NUMBER}",
+            body: "Tous les contrôles ont été validés sans vulnérabilités."
+        )
     }
 }
 
