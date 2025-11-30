@@ -22,22 +22,25 @@ pipeline {
             }
         }
 
-        stage('Install Python Dependencies') {
+        stage('Install Dependencies') {
             steps {
                 echo 'Installation des dépendances Python...'
+                // Utiliser python3 -m pip explicitement pour éviter l'erreur pip not found
                 sh '''
-                pip3 install --upgrade pip
-                pip3 install -r requirements.txt
+                python3 -m ensurepip --upgrade
+                python3 -m pip install --upgrade pip
+                python3 -m pip install -r requirements.txt
                 '''
             }
         }
 
-        stage('Pre-commit & Bandit') {
+        stage('Pre-commit & Bandit Scan') {
             steps {
-                echo 'Vérification du code avec pre-commit et Bandit...'
+                echo 'Analyse du code avec pre-commit et Bandit...'
                 sh '''
-                pip3 install pre-commit
+                python3 -m pip install pre-commit bandit
                 pre-commit run --all-files
+                bandit -r . -ll
                 '''
             }
         }
@@ -51,7 +54,7 @@ pipeline {
 
         stage('Deploy to Staging') {
             steps {
-                echo 'Déploiement en environnement staging...'
+                echo 'Déploiement de l’application en staging...'
                 sh "docker run -d -p ${APP_PORT}:5000 ${DOCKER_IMAGE}:${DOCKER_TAG}"
             }
         }
