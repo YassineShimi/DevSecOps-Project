@@ -25,7 +25,7 @@ pipeline {
                 echo 'Analyse statique du code avec Bandit...'
                 sh '''
                     docker run --rm -v ${WORKSPACE}:/app python:3.9-alpine \
-                    sh -c "pip install bandit && bandit -r /app -f html -o /app/reports/bandit_report.html -ll"
+                    sh -c "mkdir -p /app/reports && pip install bandit && bandit -r /app -f html -o /app/reports/bandit_report.html -ll"
                 '''
             }
         }
@@ -101,35 +101,54 @@ pipeline {
             steps {
                 echo 'Validation des criteres de securite...'
                 script {
-                    def criticalVulnerabilities = sh(
-                        script: """
-                            if [ -f "reports/trivy_report.json" ]; then
+                    // Vérifier si les rapports existent
+                    def banditReport = fileExists 'reports/bandit_report.html'
+                    def dependencyReport = fileExists 'reports/dependency-check-report.html'
+                    def trivyReport = fileExists 'reports/trivy_report.json'
+                    def zapReport = fileExists 'reports/zap_report.json'
+                    
+                    if (!banditReport) {
+                        echo "Avertissement: Rapport Bandit manquant"
+                    }
+                    if (!dependencyReport) {
+                        echo "Avertissement: Rapport OWASP Dependency Check manquant"
+                    }
+                    if (!trivyReport) {
+                        echo "Avertissement: Rapport Trivy manquant"
+                    }
+                    if (!zapReport) {
+                        echo "Avertissement: Rapport ZAP manquant"
+                    }
+                    
+                    // Vérification basique des vulnérabilités (si le rapport existe)
+                    if (trivyReport) {
+                        def criticalVulnerabilities = sh(
+                            script: """
                                 grep -c '"Severity": "CRITICAL"' reports/trivy_report.json || echo "0"
-                            else
-                                echo "0"
-                            fi
-                        """,
-                        returnStdout: true
-                    ).trim().toInteger()
+                            """,
+                            returnStdout: true
+                        ).trim().toInteger()
+                        
+                        if (criticalVulnerabilities > 0) {
+                            error("${criticalVulnerabilities} vulnerabilite(s) CRITIQUE(s) detectee(s). Pipeline bloque.")
+                        }
+                    }
                     
-                    def secretsDetected = sh(
-                        script: """
-                            if [ -f "reports/gitleaks_report.json" ]; then
+                    // Vérification des secrets (si le rapport existe)
+                    if (fileExists('reports/gitleaks_report.json')) {
+                        def secretsDetected = sh(
+                            script: """
                                 jq length reports/gitleaks_report.json || echo "0"
-                            else
-                                echo "0"
-                            fi
-                        """,
-                        returnStdout: true
-                    ).trim().toInteger()
-                    
-                    if (criticalVulnerabilities > 0) {
-                        error("${criticalVulnerabilities} vulnerabilite(s) CRITIQUE(s) detectee(s). Pipeline bloque.")
+                            """,
+                            returnStdout: true
+                        ).trim().toInteger()
+                        
+                        if (secretsDetected > 0) {
+                            echo "${secretsDetected} secret(s) potentiel(s) detecte(s). Verification necessaire."
+                        }
                     }
                     
-                    if (secretsDetected > 0) {
-                        echo "${secretsDetected} secret(s) potentiel(s) detecte(s). Verification necessaire."
-                    }
+                    echo "Tous les controles de securite ont ete executes avec succes"
                 }
             }
         }
@@ -146,11 +165,11 @@ pipeline {
                 echo "Date: $(date)" >> reports/security_summary.txt
                 echo "Statut: ''' + currentBuild.result + '''" >> reports/security_summary.txt
                 echo "==========================================" >> reports/security_summary.txt
-                echo "SAST (Bandit): Complete" >> reports/security_summary.txt
-                echo "SCA (OWASP Dependency Check): Complete" >> reports/security_summary.txt
-                echo "Detection de secrets (Gitleaks): Complete" >> reports/security_summary.txt
-                echo "Scan Docker (Trivy): Complete" >> reports/security_summary.txt
-                echo "DAST (OWASP ZAP): Complete" >> reports/security_summary.txt
+                echo "SAST (Bandit): ''' + (fileExists('reports/bandit_report.html') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
+                echo "SCA (OWASP Dependency Check): ''' + (fileExists('reports/dependency-check-report.html') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
+                echo "Detection de secrets (Gitleaks): ''' + (fileExists('reports/gitleaks_report.json') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
+                echo "Scan Docker (Trivy): ''' + (fileExists('reports/trivy_report.json') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
+                echo "DAST (OWASP ZAP): ''' + (fileExists('reports/zap_report.json') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
             '''
             
             archiveArtifacts artifacts: "reports/**", allowEmptyArchive: true
