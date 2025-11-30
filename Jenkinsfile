@@ -32,13 +32,15 @@ pipeline {
         
         stage('SCA - Dependency Check') {
             steps {
-                echo 'Analyse des dependances avec OWASP...'
+                echo 'Analyse rapide des dependances avec Trivy...'
                 sh '''
-                    docker run --rm -v ${WORKSPACE}:/src owasp/dependency-check:latest \
-                    --scan /src \
-                    --format HTML \
-                    --project "DevSecOps-Project" \
-                    --out /src/reports/dependency-check-report.html
+                    # Analyser les dependances du projet
+                    docker run --rm -v ${WORKSPACE}:/app aquasec/trivy:latest \
+                    fs --format json --output /app/reports/trivy_fs_report.json /app
+                    
+                    # Generer aussi un rapport HTML pour visualisation
+                    docker run --rm -v ${WORKSPACE}:/app aquasec/trivy:latest \
+                    fs --format html --output /app/reports/trivy_fs_report.html /app
                 '''
             }
         }
@@ -66,7 +68,12 @@ pipeline {
                 sh '''
                     docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
                     -v ${WORKSPACE}/reports:/reports aquasec/trivy:latest \
-                    image --format json -o /reports/trivy_report.json ${DOCKER_IMAGE}:${DOCKER_TAG}
+                    image --format json --output /reports/trivy_image_report.json ${DOCKER_IMAGE}:${DOCKER_TAG}
+                    
+                    # Rapport HTML pour l'image
+                    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                    -v ${WORKSPACE}/reports:/reports aquasec/trivy:latest \
+                    image --format html --output /reports/trivy_image_report.html ${DOCKER_IMAGE}:${DOCKER_TAG}
                 '''
             }
         }
@@ -103,34 +110,48 @@ pipeline {
                 script {
                     // Vérifier si les rapports existent
                     def banditReport = fileExists 'reports/bandit_report.html'
-                    def dependencyReport = fileExists 'reports/dependency-check-report.html'
-                    def trivyReport = fileExists 'reports/trivy_report.json'
+                    def trivyFSReport = fileExists 'reports/trivy_fs_report.json'
+                    def trivyImageReport = fileExists 'reports/trivy_image_report.json'
                     def zapReport = fileExists 'reports/zap_report.json'
                     
                     if (!banditReport) {
                         echo "Avertissement: Rapport Bandit manquant"
                     }
-                    if (!dependencyReport) {
-                        echo "Avertissement: Rapport OWASP Dependency Check manquant"
+                    if (!trivyFSReport) {
+                        echo "Avertissement: Rapport Trivy FS manquant"
                     }
-                    if (!trivyReport) {
-                        echo "Avertissement: Rapport Trivy manquant"
+                    if (!trivyImageReport) {
+                        echo "Avertissement: Rapport Trivy Image manquant"
                     }
                     if (!zapReport) {
                         echo "Avertissement: Rapport ZAP manquant"
                     }
                     
-                    // Vérification basique des vulnérabilités (si le rapport existe)
-                    if (trivyReport) {
-                        def criticalVulnerabilities = sh(
+                    // Vérification des vulnérabilités critiques dans Trivy FS
+                    if (trivyFSReport) {
+                        def criticalVulnerabilitiesFS = sh(
                             script: """
-                                grep -c '"Severity": "CRITICAL"' reports/trivy_report.json || echo "0"
+                                grep -c '"Severity": "CRITICAL"' reports/trivy_fs_report.json || echo "0"
                             """,
                             returnStdout: true
                         ).trim().toInteger()
                         
-                        if (criticalVulnerabilities > 0) {
-                            error("${criticalVulnerabilities} vulnerabilite(s) CRITIQUE(s) detectee(s). Pipeline bloque.")
+                        if (criticalVulnerabilitiesFS > 0) {
+                            error("${criticalVulnerabilitiesFS} vulnerabilite(s) CRITIQUE(s) detectee(s) dans les dependances. Pipeline bloque.")
+                        }
+                    }
+                    
+                    // Vérification des vulnérabilités critiques dans Trivy Image
+                    if (trivyImageReport) {
+                        def criticalVulnerabilitiesImage = sh(
+                            script: """
+                                grep -c '"Severity": "CRITICAL"' reports/trivy_image_report.json || echo "0"
+                            """,
+                            returnStdout: true
+                        ).trim().toInteger()
+                        
+                        if (criticalVulnerabilitiesImage > 0) {
+                            error("${criticalVulnerabilitiesImage} vulnerabilite(s) CRITIQUE(s) detectee(s) dans l'image Docker. Pipeline bloque.")
                         }
                     }
                     
@@ -166,9 +187,9 @@ pipeline {
                 echo "Statut: ''' + currentBuild.result + '''" >> reports/security_summary.txt
                 echo "==========================================" >> reports/security_summary.txt
                 echo "SAST (Bandit): ''' + (fileExists('reports/bandit_report.html') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
-                echo "SCA (OWASP Dependency Check): ''' + (fileExists('reports/dependency-check-report.html') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
+                echo "SCA (Trivy FS): ''' + (fileExists('reports/trivy_fs_report.json') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
                 echo "Detection de secrets (Gitleaks): ''' + (fileExists('reports/gitleaks_report.json') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
-                echo "Scan Docker (Trivy): ''' + (fileExists('reports/trivy_report.json') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
+                echo "Scan Docker (Trivy Image): ''' + (fileExists('reports/trivy_image_report.json') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
                 echo "DAST (OWASP ZAP): ''' + (fileExists('reports/zap_report.json') ? 'Complete' : 'Echec') + '''" >> reports/security_summary.txt
             '''
             
@@ -184,7 +205,7 @@ pipeline {
                  
                  Tous les controles de securite ont ete valides :
                  - Analyse statique (SAST) avec Bandit
-                 - Analyse des dependances (SCA) avec OWASP Dependency Check
+                 - Analyse des dependances (SCA) avec Trivy
                  - Detection de secrets avec Gitleaks
                  - Scan de securite Docker avec Trivy
                  - Tests dynamiques (DAST) avec OWASP ZAP
